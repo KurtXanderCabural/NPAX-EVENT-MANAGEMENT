@@ -1,0 +1,91 @@
+<!-- auth-shell keeps the app shell's full-bleed layout (see app.scss); login-shell carries the look. -->
+<div class="auth-shell login-shell">
+  <div class="login-frame">
+    <!-- Brand panel -->
+    <aside class="login-brand">
+      <span class="deco deco-1"></span>
+      <span class="deco deco-2"></span>
+
+      <div class="brand-row">
+        <span class="brand-tile"><mat-icon>grid_view</mat-icon></span>
+        <span class="brand-lines">
+          <span class="brand-name">NXPass</span>
+          <span class="brand-sub">Event Management</span>
+        </span>
+      </div>
+
+      <div class="brand-copy">
+        <h2>Events, check-ins and passes, all in one place.</h2>
+        <p>Sign in to register for events, show your pass, and manage attendance.</p>
+      </div>
+
+      <ul class="brand-points">
+        <li><span><mat-icon>qr_code_2</mat-icon></span> QR entry passes</li>
+        <li><span><mat-icon>face</mat-icon></span> Face check-in</li>
+        <li><span><mat-icon>notifications_active</mat-icon></span> Live updates</li>
+      </ul>
+
+      <span class="brand-foot">Powered by <strong>&#64;NOW</strong></span>
+    </aside>
+
+    <!-- Sign-in form -->
+    <section class="login-card">
+      @if (loading()) {
+        <mat-progress-bar mode="indeterminate" class="login-progress"></mat-progress-bar>
+      }
+
+      <span class="login-icon"><mat-icon>lock_person</mat-icon></span>
+      <h1 class="login-title">Welcome back</h1>
+      <p class="login-sub">Sign in to your account to continue.</p>
+
+      <form #f="ngForm" (ngSubmit)="submit()" class="login-form">
+        <mat-form-field appearance="outline" class="full-width">
+          <mat-label>Username or email</mat-label>
+          <mat-icon matPrefix>person</mat-icon>
+          <input matInput type="text" name="email" [(ngModel)]="email" #emailCtrl="ngModel"
+                 required autocomplete="username" />
+          @if (emailCtrl.hasError('required')) { <mat-error>Username or email is required.</mat-error> }
+        </mat-form-field>
+
+        <mat-form-field appearance="outline" class="full-width">
+          <mat-label>Password</mat-label>
+          <mat-icon matPrefix>lock</mat-icon>
+          <input
+            matInput
+            [type]="showPassword() ? 'text' : 'password'"
+            name="password"
+            [(ngModel)]="password"
+            #pwdCtrl="ngModel"
+            required
+            autocomplete="current-password"
+          />
+          <button
+            mat-icon-button
+            matSuffix
+            type="button"
+            (click)="showPassword.set(!showPassword())"
+            [attr.aria-label]="showPassword() ? 'Hide password' : 'Show password'"
+            [attr.aria-pressed]="showPassword()"
+          >
+            <mat-icon>{{ showPassword() ? 'visibility_off' : 'visibility' }}</mat-icon>
+          </button>
+          @if (pwdCtrl.hasError('required')) { <mat-error>Password is required.</mat-error> }
+        </mat-form-field>
+
+        <button type="submit" class="login-btn" [disabled]="loading() || f.invalid">
+          @if (loading()) {
+            <span>Signing in…</span>
+          } @else {
+            <span>Sign in</span> <mat-icon>arrow_forward</mat-icon>
+          }
+        </button>
+      </form>
+
+      <div class="login-divider"><span>New here?</span></div>
+
+      <a routerLink="/register" class="login-alt">
+        <mat-icon>person_add</mat-icon> Create a participant account
+      </a>
+    </section>
+  </div>
+</div>

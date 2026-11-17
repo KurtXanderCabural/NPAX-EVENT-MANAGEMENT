@@ -1,0 +1,102 @@
+<div class="page-title">
+  <mat-icon color="primary">event</mat-icon>
+  <h1>Events</h1>
+</div>
+
+@if (loading()) {
+  <div class="empty-state"><mat-spinner diameter="40"></mat-spinner></div>
+} @else if (events().length === 0) {
+  <div class="empty-state">
+    <mat-icon>event_busy</mat-icon>
+    <p>No events are open for registration right now.</p>
+  </div>
+} @else {
+  <mat-form-field appearance="outline" class="full-width search-field">
+    <mat-label>Search events</mat-label>
+    <mat-icon matPrefix>search</mat-icon>
+    <input matInput [ngModel]="search()" (ngModelChange)="search.set($event)"
+           placeholder="Title, venue, or description" />
+    @if (search()) {
+      <button matIconSuffix mat-icon-button aria-label="Clear" (click)="search.set('')">
+        <mat-icon>close</mat-icon>
+      </button>
+    }
+  </mat-form-field>
+
+  @if (filtered().length === 0) {
+    <p class="muted">No events match “{{ search() }}”.</p>
+  }
+
+  <div class="ev-grid">
+    @for (e of filtered(); track e.id) {
+      <article class="ev-card">
+        <!-- Banner (or gradient placeholder) with the date tile and status chips on top -->
+        <div class="ev-media" [class.placeholder]="!e.bannerImage">
+          @if (e.bannerImage) {
+            <img class="zoomable" [src]="e.bannerImage" [alt]="e.title + ' banner'"
+                 (click)="viewImage(e.bannerImage)" />
+          } @else {
+            <mat-icon>celebration</mat-icon>
+          }
+          <span class="ev-date">
+            <span class="m">{{ e.startsAt | date: 'MMM' }}</span>
+            <span class="d">{{ e.startsAt | date: 'd' }}</span>
+          </span>
+          <div class="ev-tags">
+            @if (isRegistered(e)) {
+              <span class="ev-tag brand"><mat-icon>check_circle</mat-icon> Registered</span>
+            }
+            @if (e.isFull) {
+              <span class="ev-tag warn"><mat-icon>groups</mat-icon> Full</span>
+            } @else if (isPast(e)) {
+              <span class="ev-tag"><mat-icon>history</mat-icon> Ended</span>
+            } @else {
+              <span class="ev-tag ok"><mat-icon>how_to_reg</mat-icon> Open</span>
+            }
+            @if (e.format === 'Online' || e.format === 'Hybrid') {
+              <span class="ev-tag brand"><mat-icon>videocam</mat-icon> {{ e.format }}</span>
+            }
+          </div>
+        </div>
+
+        <div class="ev-body">
+          <h2 class="ev-name">{{ e.title }}</h2>
+          <div class="ev-meta">
+            <p class="ev-line"><mat-icon>schedule</mat-icon>
+              <span>{{ e.startsAt | date: 'EEE, MMM d y, h:mm a' }} – {{ e.endsAt | date: 'MMM d, h:mm a' }}</span>
+            </p>
+            @if (e.format === 'Online') {
+              <p class="ev-line"><mat-icon>videocam</mat-icon> <span>Online meeting</span></p>
+            } @else {
+              <p class="ev-line"><mat-icon>place</mat-icon>
+                <span>{{ e.venue }}@if (e.format === 'Hybrid') { · also online }</span></p>
+            }
+            @if (e.sessions.length > 0) {
+              <p class="ev-line"><mat-icon>calendar_view_day</mat-icon>
+                <span>{{ e.sessions.length }} sub-event{{ e.sessions.length === 1 ? '' : 's' }}</span>
+              </p>
+            }
+          </div>
+          @if (e.description) { <p class="ev-blurb">{{ e.description }}</p> }
+        </div>
+
+        <div class="ev-foot">
+          <button type="button" class="ev-btn" (click)="openDetails(e)">
+            <mat-icon>info</mat-icon> Details
+          </button>
+          <span class="spacer"></span>
+          @if (registrationBlocked(e)) {
+            <a class="ev-btn done" routerLink="/my-events">
+              <mat-icon>check_circle</mat-icon> Registered
+            </a>
+          } @else {
+            <a class="ev-btn solid" [routerLink]="['/e', e.publicSlug]">
+              <mat-icon>{{ isPast(e) ? 'visibility' : 'how_to_reg' }}</mat-icon>
+              {{ isPast(e) ? 'View' : (isRegistered(e) ? 'Add sub-event' : 'Register') }}
+            </a>
+          }
+        </div>
+      </article>
+    }
+  </div>
+}

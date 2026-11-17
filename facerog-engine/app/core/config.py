@@ -1,0 +1,109 @@
+from functools import lru_cache
+from pathlib import Path
+from typing import Literal
+
+from pydantic import Field, field_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
+
+class Settings(BaseSettings):
+    """Engine configuration. Every field maps to an `FRE_<FIELD_NAME>` env var."""
+
+    model_config = SettingsConfigDict(
+        env_prefix="FRE_",
+        # .env.local (git-ignored) holds machine-local secrets such as FRE_BACKEND_API_KEY.
+        env_file=(PROJECT_ROOT / ".env", PROJECT_ROOT / ".env.local"),
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
+
+    model_dir: Path = Path("app/ml/weights")
+    detector_model_file: str = "det_10g.onnx"
+    embedder_model_file: str = "w600k_r50.onnx"
+    use_gpu: bool = True
+
+    # Known faces come from the Event Registration API (GET /api/face-engine/events/{id}/gallery).
+    backend_base_url: str = ""
+    backend_api_key: str = ""
+    backend_event_id: int | None = Field(default=None, description="Gallery loaded at startup.")
+    backend_timeout_seconds: float = Field(default=30.0, gt=0.0)
+    # The engine's own copy of each event's photos, names and templates (biometric data).
+    dataset_dir: Path = Path("datasets/faces")
+    # How often the copies of finished events are deleted (also once at startup).
+    gallery_cleanup_interval_minutes: float = Field(default=15.0, gt=0.0)
+    # Browser origins allowed to call the engine (the Angular app), as a JSON list.
+    cors_origins: list[str] = []
+
+    detection_input_size: int = 640
+    detection_confidence_threshold: float = Field(default=0.5, ge=0.0, le=1.0)
+    detection_nms_threshold: float = Field(default=0.4, ge=0.0, le=1.0)
+    min_face_size_pixels: int = 24
+
+    match_threshold: float = Field(default=0.40, ge=-1.0, le=1.0)
+    top_k: int = 3
+
+    # "browser": frames come from the webcam of the browser showing the TV, so the engine can run
+    # on a server with no camera. Also a webcam index ("0"), video file path or RTSP URL.
+    video_source: str = "browser"
+    video_autostart: bool = True
+    video_frame_width: int = 960
+    # What to ask a webcam for (0 = camera default). It picks the nearest mode it supports, so
+    # 60 fps only happens on a camera that has a 60 fps mode; the chosen mode is logged at start.
+    video_capture_width: int = Field(default=1280, ge=0)
+    video_capture_height: int = Field(default=720, ge=0)
+    video_capture_fps: float = Field(default=60.0, ge=0.0)
+    video_capture_mjpg: bool = True
+    stream_jpeg_quality: int = Field(default=80, ge=10, le=100)
+    stream_max_fps: float = Field(default=60.0, gt=0.0)
+    # Show the live video mirrored, like a selfie camera. Display only: recognition and QR
+    # reading always use the camera's real image.
+    stream_mirror: bool = True
+
+    track_high_threshold: float = 0.6
+    track_low_threshold: float = 0.2
+    track_new_threshold: float = 0.7
+    track_buffer_frames: int = 30
+    trajectory_length: int = 60
+
+    recognition_interval_frames: int = 5
+    # Each face costs about 80 ms on a CPU. New faces go first and the rest follow on the next
+    # frames, so a crowd doesn't freeze the boxes.
+    recognition_max_faces_per_frame: int = Field(default=2, ge=1)
+    reverify_interval_frames: int = 90
+    track_embedding_history: int = 10
+    angled_face_threshold_degrees: float = 15.0
+    zoom_size_pixels: int = 256
+
+    # Someone seen again is queued (shown) again once they've been out of view this long.
+    check_in_repeat_seconds: float = Field(default=10.0, ge=0.0)
+    # "steady": identify a face only once the person stands or moves a little (not walking past).
+    # "continuous": identify right away, even someone walking quickly. The TV can switch it live.
+    detection_mode: Literal["steady", "continuous"] = "steady"
+    # Steady = moving at most steady_max_speed face widths per second over steady_frames frames.
+    steady_frames: int = Field(default=3, ge=2)
+    steady_max_speed: float = Field(default=0.75, gt=0.0)
+    tv_display_seconds: float = Field(default=3.0, gt=0.0)
+    tv_heartbeat_seconds: float = Field(default=5.0, gt=0.0)
+
+    max_upload_size_bytes: int = 10 * 1024 * 1024
+
+    @field_validator("model_dir", "dataset_dir")
+    @classmethod
+    def _resolve_from_project_root(cls, path: Path) -> Path:
+        """Relative paths are anchored at the project root, not the shell's current directory."""
+        return path if path.is_absolute() else PROJECT_ROOT / path
+
+    @property
+    def detector_model_path(self) -> Path:
+        return self.model_dir / self.detector_model_file
+
+    @property
+    def embedder_model_path(self) -> Path:
+        return self.model_dir / self.embedder_model_file
+
+
+@lru_cache
+def get_settings() -> Settings:
+    return Settings()

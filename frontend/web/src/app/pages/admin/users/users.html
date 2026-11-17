@@ -1,0 +1,116 @@
+<div class="user-master">
+  <!-- Action bar -->
+  <div class="um-bar">
+    <div class="um-actions">
+      <button type="button" class="um-btn primary" (click)="newUser()">
+        <mat-icon>add</mat-icon> New
+      </button>
+      <button type="button" class="um-btn" (click)="save()" [disabled]="panel.saving()">
+        <mat-icon>save</mat-icon> Save
+      </button>
+      <button type="button" class="um-btn" (click)="remove()" [disabled]="!selected()">
+        <mat-icon>delete</mat-icon> Delete
+      </button>
+      <button type="button" class="um-btn" (click)="exportCsv()">
+        <mat-icon>open_in_new</mat-icon> Export
+      </button>
+      <button type="button" class="um-btn" (click)="importUsers()" [disabled]="loadingImport()">
+        <mat-icon>upload_file</mat-icon> Import
+      </button>
+      <button type="button" class="um-icon-btn" (click)="refresh()" matTooltip="Refresh" aria-label="Refresh">
+        <mat-icon [class.spin]="loading()">sync</mat-icon>
+      </button>
+    </div>
+
+    <div class="um-search">
+      <label class="um-search-box">
+        <mat-icon>search</mat-icon>
+        <input type="search" [ngModel]="search()" (ngModelChange)="search.set($event)"
+               placeholder="Search name, email, ID No., department…" aria-label="Search users" />
+      </label>
+      <button type="button" class="um-filter" [class.on]="roleFilter() !== 'All'" [matMenuTriggerFor]="filterMenu">
+        <mat-icon>filter_list</mat-icon> {{ roleFilter() === 'All' ? 'Role' : roleFilter() }}
+      </button>
+      <mat-menu #filterMenu="matMenu">
+        @for (r of roleFilters; track r) {
+          <button mat-menu-item (click)="roleFilter.set(r)">
+            <mat-icon>{{ roleFilter() === r ? 'radio_button_checked' : 'radio_button_unchecked' }}</mat-icon>
+            {{ r === 'All' ? 'All roles' : r }}
+          </button>
+        }
+      </mat-menu>
+    </div>
+  </div>
+
+  @if (panel.saving()) {
+    <mat-progress-bar mode="indeterminate" class="um-progress"></mat-progress-bar>
+  }
+
+  <!-- Split: list (left) | form (right) -->
+  <div class="um-split">
+    <section class="um-list" aria-label="Users">
+      <div class="um-table-wrap">
+        <table class="um-table">
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th>Username</th>
+              <th class="col-email">Email</th>
+              <th>Role</th>
+            </tr>
+          </thead>
+          <tbody>
+            @if (loading() && !users().length) {
+              <tr class="um-empty"><td colspan="4"><mat-spinner diameter="32"></mat-spinner></td></tr>
+            } @else if (!filtered().length) {
+              <tr class="um-empty"><td colspan="4">No users match your search.</td></tr>
+            }
+            @for (u of paged(); track u.id) {
+              <tr class="um-row" [class.selected]="selected()?.id === u.id" (click)="select(u)"
+                  tabindex="0" (keydown.enter)="select(u)" [attr.aria-selected]="selected()?.id === u.id">
+                <td>
+                  <span class="u-name">
+                    {{ u.fullName }}
+                    @if (u.hasFace) {
+                      <mat-icon class="inline-icon face-badge" matTooltip="Face registered">face</mat-icon>
+                    }
+                  </span>
+                </td>
+                <td>{{ u.username }}</td>
+                <td class="col-email">{{ u.email }}</td>
+                <td>
+                  <span class="role-pill" [class.admin]="u.role !== 'Participant'">{{ u.role }}</span>
+                  @if (u.role === 'Participant' && u.canConfirmRegistrations) {
+                    <mat-icon class="inline-icon grant" matTooltip="Can confirm registrations">how_to_reg</mat-icon>
+                  }
+                </td>
+              </tr>
+            }
+            @if (filtered().length) {
+              @for (_ of fillerRows(); track $index) {
+                <tr class="um-filler"><td colspan="4"></td></tr>
+              }
+            }
+          </tbody>
+        </table>
+      </div>
+
+      <div class="um-pager">
+        <span class="muted um-count">{{ filtered().length }} of {{ users().length }} users</span>
+        <div class="um-pages">
+          <button type="button" class="um-page-btn" (click)="prevPage()" [disabled]="pageIndex() === 0" aria-label="Previous page">
+            <mat-icon>arrow_back</mat-icon>
+          </button>
+          <span class="um-page-num">{{ pageIndex() + 1 }}<span class="muted"> / {{ pageCount() }}</span></span>
+          <button type="button" class="um-page-btn" (click)="nextPage()" [disabled]="pageIndex() >= pageCount() - 1" aria-label="Next page">
+            <mat-icon>arrow_forward</mat-icon>
+          </button>
+        </div>
+      </div>
+    </section>
+
+    <section class="um-form" #formPane aria-label="User details">
+      <app-user-form-panel #panel [user]="selected()" (saved)="onSaved()" />
+    </section>
+  </div>
+</div>

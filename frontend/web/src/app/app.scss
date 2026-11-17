@@ -1,0 +1,316 @@
+:host {
+  display: flex;
+  flex-direction: column;
+  min-height: 100dvh;
+}
+
+// ---- Gradient app header (teal to green) ----
+.app-header {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-height: 84px;
+  padding: 12px 40px;
+  background: linear-gradient(90deg, #0d9488 0%, #3dbb8a 55%, #7dd36a 100%);
+  color: #fff;
+  box-shadow: 0 2px 10px rgb(var(--brand-rgb) / 0.18);
+}
+
+// Translucent white tile used by the Home button, brand badge and user chip.
+%glass {
+  background: rgba(255, 255, 255, 0.18);
+  border: 1px solid rgba(255, 255, 255, 0.22);
+}
+
+.home-btn {
+  @extend %glass;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 50px;
+  padding: 0 28px;
+  border-radius: 12px;
+  color: #fff;
+  font-size: 18px;
+  font-weight: 600;
+  text-decoration: none;
+  transition: background 0.15s ease;
+
+  &:hover,
+  &.active {
+    background: rgba(255, 255, 255, 0.28);
+  }
+}
+
+.header-divider {
+  width: 1px;
+  height: 44px;
+  margin: 0 10px;
+  background: rgba(255, 255, 255, 0.3);
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  cursor: pointer;
+  min-width: 0;
+}
+
+.brand-badge {
+  @extend %glass;
+  display: grid;
+  place-items: center;
+  width: 52px;
+  height: 52px;
+  border-radius: 12px;
+
+  mat-icon {
+    font-size: 28px;
+    width: 28px;
+    height: 28px;
+  }
+}
+
+.brand-lines,
+.user-lines {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.2;
+  min-width: 0;
+}
+
+.brand-lines {
+  white-space: nowrap;
+}
+
+@media (max-width: 900px) {
+  .brand-sub {
+    display: none;
+  }
+  .app-header {
+    padding: 10px 16px;
+  }
+}
+
+.brand-text {
+  font-size: 22px;
+  font-weight: 800;
+  letter-spacing: -0.2px;
+}
+
+.brand-sub {
+  font-size: 14px;
+  opacity: 0.92;
+}
+
+.notif-btn {
+  color: #fff;
+}
+
+.user-chip {
+  @extend %glass;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 34px 6px 8px;
+  border-radius: 999px;
+  color: #fff;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.15s ease;
+
+  &:hover {
+    background: rgba(255, 255, 255, 0.28);
+  }
+}
+
+.user-avatar {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 50px;
+  height: 50px;
+  border-radius: 50%;
+  overflow: hidden;
+  background: #fff;
+  color: var(--brand-primary);
+  font-size: 19px;
+  font-weight: 800;
+
+  img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+  }
+}
+
+.user-name {
+  font-size: 17px;
+  font-weight: 700;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.user-role {
+  font-size: 13px;
+  opacity: 0.9;
+}
+
+/* Install-app banner (PWA). Shown app-wide until installed or dismissed. */
+.install-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px 8px 16px;
+  background: var(--brand-grad-soft);
+  border-bottom: 1px solid rgb(var(--brand-rgb) / 0.25);
+  font-size: 14px;
+
+  .install-icon {
+    color: var(--brand-primary);
+    flex: none;
+  }
+  .install-text {
+    min-width: 0;
+  }
+  .inline-share {
+    font-size: 18px;
+    height: 18px;
+    width: 18px;
+    vertical-align: text-bottom;
+  }
+  .spacer {
+    flex: 1 1 auto;
+  }
+}
+
+@media (max-width: 600px) {
+  .install-banner {
+    font-size: 13px;
+    padding: 8px 8px 8px 12px;
+  }
+}
+
+.spacer {
+  flex: 1 1 auto;
+}
+
+.app-content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  padding: 28px 20px 56px;
+  max-width: 1120px;
+  width: 100%;
+  margin: 0 auto;
+
+  // When the content is an auth shell (login / register), remove the
+  // extra padding so the card can centre itself within the flex area.
+  &.auth-layout {
+    padding: 0;
+    max-width: 100%;
+  }
+
+  // The module launcher uses a wider canvas so cards sit five across.
+  &.wide-layout {
+    max-width: 1400px;
+    padding-top: 32px;
+  }
+
+  // Mail Planner is a planning board: use the full window width.
+  &.full-layout {
+    max-width: none;
+    padding: 24px clamp(12px, 2.5vw, 40px) 40px;
+  }
+}
+
+.verify-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 11px 18px;
+  background: linear-gradient(90deg, #fff4d6, #fef7e0);
+  color: #7a4f01;
+  font-size: 14px;
+  border-bottom: 1px solid rgba(176, 96, 0, 0.15);
+}
+
+.verify-banner button {
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+@media (max-width: 600px) {
+  .app-header {
+    min-height: 64px;
+    gap: 8px;
+    padding: 8px 12px;
+  }
+  .home-btn {
+    height: 42px;
+    padding: 0 12px;
+    span {
+      display: none;
+    }
+  }
+  .header-divider,
+  .brand-sub,
+  .user-lines {
+    display: none;
+  }
+  .brand-badge {
+    width: 42px;
+    height: 42px;
+  }
+  .brand-text {
+    font-size: 18px;
+  }
+  .user-chip {
+    padding: 4px;
+  }
+  .user-avatar {
+    width: 38px;
+    height: 38px;
+    font-size: 15px;
+  }
+  .app-content {
+    padding: 20px 14px 48px;
+  }
+}
+
+// ---- Branding footer ----
+.branding-footer {
+  width: 100%;
+  padding: 10px 20px;
+  text-align: center;
+  background: rgba(255, 255, 255, 0.72);
+  backdrop-filter: saturate(160%) blur(10px);
+  -webkit-backdrop-filter: saturate(160%) blur(10px);
+  border-top: 1px solid rgba(15, 23, 42, 0.08);
+  box-shadow: 0 -1px 4px rgba(15, 23, 42, 0.04);
+  position: relative;
+  z-index: 10;
+}
+
+.branding-footer__text {
+  font-size: 11.5px;
+  font-weight: 500;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  background: var(--brand-grad);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  opacity: 0.8;
+
+  strong {
+    font-weight: 800;
+    opacity: 1;
+  }
+}

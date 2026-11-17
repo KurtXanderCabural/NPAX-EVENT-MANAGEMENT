@@ -1,0 +1,319 @@
+using System.Data;
+using EventRegistration.Api.Data;
+using EventRegistration.Api.Models;
+using EventRegistration.Api.Services;
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
+using System.Text.Json;
+
+namespace EventRegistration.Api.Controllers;
+
+[ApiController]
+[Route("api/events/{eventId:int}/invitations")]
+[Authorize(Roles = Roles.Admin + "," + Roles.SuperAdmin)]
+public class InvitationsController : ControllerBase
+{
+    private readonly AppDbContext _db;
+    private readonly EmailService _email;
+    private readonly IConfiguration _config;
+    private readonly InvitationEmailDispatcher _dispatcher;
+
+    public InvitationsController(AppDbContext db, EmailService email, IConfiguration config, InvitationEmailDispatcher dispatcher)
+    {
+        _db = db;
+        _email = email;
+        _config = config;
+        _dispatcher = dispatcher;
+    }
+
+    [HttpGet]
+    public async Task<ActionResult<IEnumerable<Invitation>>> List(int eventId)
+    {
+        var items = await _db.Invitations.Where(i => i.EventId == eventId)
+            .OrderByDescending(i => i.SentAt).ToListAsync();
+        return Ok(items);
+    }
+
+    [HttpPost("compose")]
+    [RequestSizeLimit(16_000_000)]
+    public async Task<IActionResult> Compose(int eventId, InvitationComposeRequest req)
+    {
+        var ev = await _db.Events.FindAsync(eventId);
+        if (ev is null) return NotFound(new { message = "This event no longer exists. Reload the event list before sending invitations." });
+        InvitationMessage message;
+        List<MailAttachmentUpload> attachments;
+        try {
+            if (!req.Draft) {
+                ValidateSchedule(req.ScheduledAt);
+                await EnsureNoScheduleConflict(eventId, req.ScheduledAt, exceptId: 0);
+            }
+            message = await new InvitationMessageBuilder(_db, _config).BuildAsync(ev, req);
+            attachments = await ResolveAttachments(req.AttachmentIds ?? [], message);
+            if (!req.Draft && (ev.StartsAt == default || ev.EndsAt <= ev.StartsAt))
+                throw new ArgumentException("Set a valid start and end date/time for this event before sending invitations.");
+        }
+        catch (ArgumentException ex) { return BadRequest(new { message = ex.Message }); }
+
+        var organizerEmail = await _db.Users.Where(u => u.Id == this.UserId()).Select(u => u.Email).FirstOrDefaultAsync();
+        var item = new InvitationEmail { EventId = eventId,
+            ReplyToAddress = InvitationMessageBuilder.Address(organizerEmail) };
+        ApplyMessage(item, message, req);
+        MailAttachments.Replace(item.Attachments, attachments);
+        _db.InvitationEmails.Add(item);
+        await _db.SaveChangesAsync();
+        if (!req.Draft && req.ScheduledAt is null) await _dispatcher.DispatchAsync(item.Id);
+        var saved = await _db.InvitationEmails.AsNoTracking().SingleAsync(m => m.Id == item.Id);
+        return Ok(DeliveryResult(saved, message.RegisterUrl));
+    }
+
+    [HttpGet("emails")]
+    public async Task<IActionResult> EmailHistory(int eventId)
+    {
+        if (!await _db.Events.AnyAsync(e => e.Id == eventId)) return NotFound();
+        // Keep large editor bodies (including inline images) out of the history list.
+        var items = await _db.InvitationEmails.AsNoTracking().Where(m => m.EventId == eventId && m.RecycledAt == null)
+            .OrderByDescending(m => m.CreatedAt).ThenByDescending(m => m.Id)
+            .Select(m => new { m.Id, m.EventId, m.ToJson, m.CcJson, m.Subject, m.Status,
+                m.CreatedAt, m.UpdatedAt, m.ScheduledAt, m.SentAt, m.LastAttemptAt, m.NextAttemptAt,
+                m.Attempts, m.LastError, m.Version }).ToListAsync();
+        return Ok(items.Select(m => new { m.Id, m.EventId,
+            to = JsonSerializer.Deserialize<List<string>>(m.ToJson), cc = JsonSerializer.Deserialize<List<string>>(m.CcJson),
+            m.Subject, m.Status, m.CreatedAt, m.UpdatedAt, m.ScheduledAt, m.SentAt, m.LastAttemptAt,
+            m.NextAttemptAt, m.Attempts, m.LastError, m.Version }));
+    }
+
+    [HttpGet("emails/{id:int}")]
+    public async Task<IActionResult> OpenEmail(int eventId, int id)
+    {
+        var item = await _db.InvitationEmails.AsNoTracking().Include(m => m.Attachments)
+            .SingleOrDefaultAsync(m => m.EventId == eventId && m.Id == id && m.RecycledAt == null);
+        return item is null ? NotFound() : Ok(EmailDetails(item));
+    }
+
+    [HttpPut("emails/{id:int}")]
+    [RequestSizeLimit(16_000_000)]
+    public async Task<IActionResult> UpdateEmail(int eventId, int id, InvitationEmailUpdateRequest req)
+    {
+        var item = await _db.InvitationEmails.Include(m => m.Event).Include(m => m.Attachments)
+            .SingleOrDefaultAsync(m => m.EventId == eventId && m.Id == id && m.RecycledAt == null);
+        if (item is null) return NotFound();
+        if (!InvitationEmailStatus.CanEdit(item.Status))
+            return Conflict(new { message = "This email is already being sent, sent or cancelled. Open it again to see its current status." });
+        if (req.Draft && item.Status != InvitationEmailStatus.Draft)
+            return Conflict(new { message = "Only an existing draft can be saved as a draft." });
+        if (Convert.ToBase64String(item.Version) != req.Version)
+            return Conflict(new { message = "This email has changed. Open it again before editing." });
+        try
+        {
+            if (!req.Draft) {
+                ValidateSchedule(req.ScheduledAt);
+                await EnsureNoScheduleConflict(eventId, req.ScheduledAt, exceptId: id);
+            }
+            var ev = item.Event!;
+            if (!req.Draft && (ev.StartsAt == default || ev.EndsAt <= ev.StartsAt))
+                throw new ArgumentException("Set a valid start and end date/time for this event before sending invitations.");
+            var savedRecipientCount = JsonSerializer.Deserialize<List<string>>(item.ToJson)!.Count +
+                JsonSerializer.Deserialize<List<string>>(item.CcJson)!.Count;
+            // Expanded directory groups may exceed the composer entry limit.
+            // Allow their saved recipient list to be edited without re-expanding it.
+            var maxEntries = Math.Max(500, savedRecipientCount);
+            if ((req.To?.Count ?? 0) + (req.Cc?.Count ?? 0) > maxEntries)
+                throw new ArgumentException($"Add at most {maxEntries} recipient entries, or use @n-pax for all users.");
+            var request = new InvitationComposeRequest(req.To, req.Cc, req.Subject, req.BodyHtml,
+                req.ScheduledAt, req.AttachmentIds, req.ExcludedTo, req.Draft);
+            var message = await new InvitationMessageBuilder(_db, _config).BuildAsync(ev, request, enforceRecipientEntryLimit: false);
+            var attachments = await ResolveAttachments(req.AttachmentIds ?? item.Attachments.Select(file => file.Id).ToList(), message);
+            ApplyMessage(item, message, request);
+            MailAttachments.Replace(item.Attachments, attachments);
+            await _db.SaveChangesAsync();
+            if (!req.Draft && req.ScheduledAt is null) await _dispatcher.DispatchAsync(id);
+            var saved = await _db.InvitationEmails.AsNoTracking().SingleAsync(m => m.Id == id);
+            return Ok(DeliveryResult(saved, message.RegisterUrl));
+        }
+        catch (ArgumentException ex) { return BadRequest(new { message = ex.Message }); }
+        catch (DbUpdateConcurrencyException) { return Conflict(new { message = "This email changed or started sending. Open it again before editing." }); }
+    }
+
+    [HttpPost("emails/{id:int}/cancel")]
+    public async Task<IActionResult> CancelEmail(int eventId, int id, InvitationEmailVersionRequest req)
+    {
+        var item = await _db.InvitationEmails.SingleOrDefaultAsync(m => m.EventId == eventId && m.Id == id && m.RecycledAt == null);
+        if (item is null) return NotFound();
+        if (!InvitationEmailStatus.CanEdit(item.Status) || Convert.ToBase64String(item.Version) != req.Version)
+            return Conflict(new { message = "This email changed or started sending. Refresh the history before cancelling." });
+        item.Status = InvitationEmailStatus.Cancelled;
+        item.UpdatedAt = DateTimeOffset.UtcNow;
+        try { await _db.SaveChangesAsync(); }
+        catch (DbUpdateConcurrencyException) { return Conflict(new { message = "This email changed or started sending. Refresh the history before cancelling." }); }
+        return NoContent();
+    }
+
+    [HttpDelete("emails/{id:int}")]
+    [HttpPost("emails/{id:int}/recycle")]
+    public async Task<IActionResult> DeleteEmail(int eventId, int id, CancellationToken cancellationToken)
+    {
+        var emails = _db.InvitationEmails.Where(m => m.EventId == eventId && m.Id == id && m.RecycledAt == null);
+        await using var transaction = await _db.Database.BeginTransactionAsync(IsolationLevel.Serializable, cancellationToken);
+        var now = DateTimeOffset.UtcNow;
+        var deleted = await MailRecycle.EligibleInvitations(_db, eventId).Where(m => m.Id == id)
+            .ExecuteUpdateAsync(s => s.SetProperty(m => m.RecycledAt, now), cancellationToken);
+        if (deleted == 0)
+        {
+            if (!await emails.AnyAsync(cancellationToken))
+                return NotFound(new { message = "This email is no longer in the event's history." });
+            return Conflict(new { message = "Cancel scheduled or queued invitations first. Wait for any active delivery or queued reply or forward to finish." });
+        }
+        await transaction.CommitAsync(cancellationToken);
+        return NoContent();
+    }
+
+    [HttpDelete("emails")]
+    [HttpPost("emails/recycle-all")]
+    public async Task<IActionResult> RecycleHistory(int eventId, CancellationToken ct)
+    {
+        if (!await _db.Events.AnyAsync(e => e.Id == eventId, ct)) return NotFound();
+        await using var transaction = await _db.Database.BeginTransactionAsync(IsolationLevel.Serializable, ct);
+        var now = DateTimeOffset.UtcNow;
+        var count = await MailRecycle.EligibleInvitations(_db, eventId)
+            .Where(m => m.Status != InvitationEmailStatus.Draft)
+            .ExecuteUpdateAsync(s => s.SetProperty(m => m.RecycledAt, now), ct);
+        await transaction.CommitAsync(ct);
+        return Ok(new { count });
+    }
+
+    [HttpGet("emails/recycle")]
+    public async Task<IActionResult> RecycledEmails(int eventId, CancellationToken ct) =>
+        Ok(await _db.InvitationEmails.Where(m => m.EventId == eventId && m.RecycledAt != null)
+            .OrderByDescending(m => m.RecycledAt).ThenByDescending(m => m.Id)
+            .Select(m => new { m.Id, m.Subject, m.RecycledAt, messageAt = m.SentAt ?? m.ScheduledAt ?? m.CreatedAt }).ToListAsync(ct));
+
+    [HttpPost("emails/recycle/{id:int}/restore")]
+    public async Task<IActionResult> RestoreEmail(int eventId, int id, CancellationToken ct)
+    {
+        var count = await _db.InvitationEmails.Where(m => m.EventId == eventId && m.Id == id && m.RecycledAt != null)
+            .ExecuteUpdateAsync(s => s.SetProperty(m => m.RecycledAt, (DateTimeOffset?)null), ct);
+        return count == 0 ? NotFound() : NoContent();
+    }
+
+    [HttpDelete("emails/recycle")]
+    [HttpPost("emails/recycle/empty")]
+    public async Task<IActionResult> EmptyRecycle(int eventId, CancellationToken ct)
+    {
+        var count = await _db.InvitationEmails.Where(m => m.EventId == eventId && m.RecycledAt != null)
+            .ExecuteDeleteAsync(ct);
+        return Ok(new { count });
+    }
+
+    private static void ValidateSchedule(DateTimeOffset? scheduledAt)
+    {
+        if (scheduledAt is not null && scheduledAt <= DateTimeOffset.UtcNow)
+            throw new ArgumentException("Choose a future date and time for the scheduled email.");
+    }
+
+    // One scheduled email per event per minute, so multi-day schedules can't stack on the same time.
+    private async Task EnsureNoScheduleConflict(int eventId, DateTimeOffset? scheduledAt, int exceptId)
+    {
+        if (scheduledAt is null) return;
+        var utc = scheduledAt.Value.ToUniversalTime();
+        var start = utc.AddTicks(-(utc.Ticks % TimeSpan.TicksPerMinute));
+        var end = start.AddMinutes(1);
+        if (await _db.InvitationEmails.AnyAsync(m => m.EventId == eventId && m.Id != exceptId &&
+                m.Status == InvitationEmailStatus.Scheduled && m.ScheduledAt >= start && m.ScheduledAt < end))
+            throw new ArgumentException("Another email for this event is already scheduled at that date and time. Choose a different time.");
+    }
+
+    private static void ApplyMessage(InvitationEmail item, InvitationMessage message, InvitationComposeRequest req)
+    {
+        // Drafts retain the group and exclusions for editing. Freeze the actual
+        // audience when the admin sends or schedules the invitation.
+        item.ToJson = JsonSerializer.Serialize(req.Draft ? req.To ?? [] : message.To);
+        item.CcJson = JsonSerializer.Serialize(req.Draft ? req.Cc ?? [] : message.Cc);
+        item.DraftExcludedToJson = req.Draft ? JsonSerializer.Serialize(req.ExcludedTo ?? []) : null;
+        item.Subject = message.Subject;
+        item.BodyHtml = message.EditableBody;
+        item.ScheduledAt = req.Draft ? null : req.ScheduledAt?.ToUniversalTime();
+        item.NextAttemptAt = item.ScheduledAt ?? DateTimeOffset.UtcNow;
+        item.Status = req.Draft ? InvitationEmailStatus.Draft : InvitationEmailStatus.Scheduled;
+        item.Attempts = 0;
+        item.LastError = null;
+        item.LastAttemptAt = null;
+        item.UpdatedAt = DateTimeOffset.UtcNow;
+    }
+
+    private async Task<List<MailAttachmentUpload>> ResolveAttachments(List<Guid> ids, InvitationMessage message) =>
+        MailAttachments.SelectFiles(ids, await MailAttachments.FindAsync(_db, ids),
+            message.Images.Values.Sum(bytes => (long)bytes.Length));
+
+    private static object EmailDetails(InvitationEmail m) => new {
+        m.Id, m.EventId, to = JsonSerializer.Deserialize<List<string>>(m.ToJson),
+        cc = JsonSerializer.Deserialize<List<string>>(m.CcJson), m.Subject, m.BodyHtml,
+        excludedTo = JsonSerializer.Deserialize<List<string>>(m.DraftExcludedToJson ?? "[]"),
+        attachments = m.Attachments.OrderBy(file => file.UploadedAt).Select(MailAttachments.Describe),
+        hasDeliveredRecipients = m.DeliveredRecipientsJson is not null,
+        canReply = m.Status == InvitationEmailStatus.Sent && m.SmtpMessageId != null,
+        m.Status, m.CreatedAt, m.UpdatedAt, m.ScheduledAt, m.SentAt, m.LastAttemptAt,
+        m.NextAttemptAt, m.Attempts, m.LastError, m.Version,
+    };
+
+    private static object DeliveryResult(InvitationEmail m, string registerUrl)
+    {
+        if (m.Status == InvitationEmailStatus.Draft)
+            return new { id = m.Id, status = m.Status, sent = 0, queued = 0, recipientCount = 0,
+                registerUrl, message = "Invitation saved as a draft." };
+        var recipients = JsonSerializer.Deserialize<List<string>>(m.ToJson)!
+            .Concat(JsonSerializer.Deserialize<List<string>>(m.CcJson)!).ToList();
+        var count = recipients.Count;
+        var delivered = m.GetDeliveredRecipients();
+        var sent = m.Status == InvitationEmailStatus.Sent ? count : recipients.Count(delivered.Contains);
+        return new { id = m.Id, status = m.Status, sent,
+            queued = m.Status == InvitationEmailStatus.Queued ? count - sent : 0, recipientCount = count, registerUrl,
+            message = m.Status switch {
+                InvitationEmailStatus.Sent => $"Invitation sent to {count} recipient(s).",
+                InvitationEmailStatus.Scheduled when m.ScheduledAt != null => $"Invitation scheduled for {count} recipient(s).",
+                InvitationEmailStatus.Queued or InvitationEmailStatus.Failed => m.LastError,
+                _ => "Invitation saved and waiting for delivery.",
+            } };
+    }
+
+    [HttpPost]
+    public async Task<IActionResult> Send(int eventId, InviteRequest req)
+    {
+        var ev = await _db.Events.FindAsync(eventId);
+        if (ev is null) return NotFound();
+
+        var frontendBase = _config["App:FrontendBaseUrl"]?.TrimEnd('/') ?? "http://localhost:4200";
+
+        var emails = req.Emails
+            .Select(e => e.Trim().ToLowerInvariant())
+            .Where(e => !string.IsNullOrWhiteSpace(e))
+            .Distinct()
+            .ToList();
+
+        var sent = 0;
+        ev.InviteSequence += 2;
+        foreach (var email in emails)
+        {
+            // Reuse the existing invitation token for this email if we've invited them before,
+            // so the same magic-link keeps working; otherwise mint a new one.
+            var invite = await _db.Invitations.FirstOrDefaultAsync(i => i.EventId == eventId && i.Email == email);
+            if (invite is null)
+            {
+                invite = new Invitation { EventId = eventId, Email = email, Status = InvitationStatus.Sent };
+                _db.Invitations.Add(invite);
+            }
+
+            // Each invitee gets their own link carrying their invite token (?invite=...),
+            // which the landing page uses to auto-login/auto-fill.
+            var registerUrl = $"{frontendBase}/e/{ev.PublicSlug}?invite={invite.Token}";
+            var html = EmailTemplates.Invitation(ev, registerUrl);
+            await _email.SendAsync(email, $"You're invited: {ev.Title}", html, attachments: new[] {
+                CalendarInvite.ForInvitation(ev, _email.FromName, _email.FromAddress, new[] { email }, Array.Empty<string>(), registerUrl) });
+            sent++;
+            await Task.Delay(200); // gentle throttle to stay under Gmail burst limits
+        }
+        await _db.SaveChangesAsync();
+
+        return Ok(new { sent });
+    }
+}
