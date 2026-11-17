@@ -693,8 +693,17 @@ export interface MailConversationDto {
   subject: string;
   bodyHtml: string | null;
   supportsRichActions?: boolean;
+  supportsReplyDelivery?: boolean;
   recipientCount: number;
   replies: MailConversationReplyDto[];
+}
+
+export interface MailReplyDeliveryDto {
+  messageId: string;
+  status: MailConversationReplyDto['status'];
+  lastAttemptAt: string | null;
+  nextAttemptAt: string | null;
+  recipients: { address: string; acceptedBySmtp: boolean }[];
 }
 
 // Composed event invitation (To / CC may hold "@n-pax" = every system user).

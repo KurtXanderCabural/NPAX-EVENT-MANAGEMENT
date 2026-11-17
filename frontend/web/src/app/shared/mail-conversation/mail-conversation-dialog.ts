@@ -12,7 +12,7 @@ import { finalize, interval, of, switchMap } from 'rxjs';
 import { ApiService } from '../../core/api.service';
 import { AuthService } from '../../core/auth.service';
 import { ALL_USERS, loadSavedRecipients, recipientAddress } from '../../core/invitation.util';
-import { ContactDto, MailAttachmentDto, MailConversationDto, MailConversationReplyDto, MailConversationTarget } from '../../core/models';
+import { ContactDto, MailAttachmentDto, MailConversationDto, MailConversationReplyDto, MailConversationTarget, MailReplyDeliveryDto } from '../../core/models';
 import { ATTACHMENT_LIMIT_MESSAGE, MailAttachmentsComponent, attachmentLimitExceeded } from '../mail-attachments/mail-attachments';
 import { RichTextEditorComponent } from '../rich-text/rich-text-editor';
 import { RichTextViewComponent } from '../rich-text/rich-text-view';
@@ -74,7 +74,7 @@ export interface MailConversationDialogData extends MailConversationTarget {
                 @if (reply.isPrivate) { <span>Private</span> }
                 @if (reply.kind === 'Forward') { <span>Forwarded</span> }
                 @if (reply.kind === 'Reaction') { <span>Reaction</span> }
-                @if (reply.status !== 'Sent') { <span>{{ reply.status }}</span> }
+                <span>{{ reply.status === 'Sent' ? 'Accepted by SMTP' : reply.status }}</span>
               </div>
               @if (reply.bodyHtml) {
                 <app-rich-text-view [html]="reply.bodyHtml" />
@@ -84,6 +84,40 @@ export interface MailConversationDialogData extends MailConversationTarget {
               <app-mail-attachments [files]="reply.attachments ?? []" [readonly]="true" [conversation]="data" />
               @if (reply.status === 'Sent' && reply.kind !== 'Forward') {
                 <ng-container [ngTemplateOutlet]="actions" [ngTemplateOutletContext]="{ $implicit: reply }" />
+              }
+              @if (adminActions) {
+                <button type="button" mat-button (click)="toggleDelivery(reply.id)"
+                        [attr.aria-expanded]="delivery()?.id === reply.id">
+                  Delivery details
+                </button>
+                @if (delivery(); as selected) {
+                  @if (selected.id === reply.id) {
+                    <section class="delivery" aria-label="Reply delivery details" aria-live="polite">
+                      @if (selected.result; as result) {
+                        <p>Message-ID <code>{{ result.messageId }}</code></p>
+                        @if (result.lastAttemptAt) {
+                          <p>Last attempt {{ result.lastAttemptAt | date: 'MMM d, h:mm a' : '+0800' }} (PH time)</p>
+                        }
+                        @if (result.nextAttemptAt) {
+                          <p>Next attempt {{ result.nextAttemptAt | date: 'MMM d, h:mm a' : '+0800' }} (PH time)</p>
+                        }
+                        <p>SMTP acceptance records the mail server handoff.</p>
+                        <ul>
+                          @for (recipient of result.recipients; track recipient.address) {
+                            <li><span>{{ recipient.address }}</span>
+                                <span>{{ recipient.acceptedBySmtp ? 'Accepted by SMTP' : 'No acceptance recorded' }}</span></li>
+                          } @empty {
+                            <li>No recipient addresses were recorded for this reply.</li>
+                          }
+                        </ul>
+                      } @else if (selected.error) {
+                          <p class="error">{{ selected.error }}</p>
+                      } @else {
+                        <p>Loading delivery details…</p>
+                      }
+                    </section>
+                  }
+                }
               }
             </article>
           } @empty {
@@ -167,6 +201,10 @@ export interface MailConversationDialogData extends MailConversationTarget {
     article p { white-space: pre-wrap; overflow-wrap: anywhere; }
     .reply-meta { display: flex; flex-wrap: wrap; gap: 6px 12px; }
     .reply-meta span { color: var(--mat-sys-on-surface-variant); }
+    .delivery { padding: 10px 12px; border: 1px solid var(--mat-sys-outline-variant); border-radius: 8px; font-size: 13px; }
+    .delivery p { margin: 0 0 6px; }
+    .delivery ul { list-style: none; margin: 0; padding: 0; max-height: 14rem; overflow: auto; }
+    .delivery li { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 2px 12px; padding: 4px 0; overflow-wrap: anywhere; }
     form { display: grid; gap: 8px; }
     form button { justify-self: start; }
     .recipient-hint { margin: 0; color: var(--mat-sys-on-surface-variant); }
@@ -182,8 +220,10 @@ export class MailConversationDialogComponent {
   private readonly destroyRef = inject(DestroyRef);
   readonly thread = signal<MailConversationDto | null>(null);
   readonly apiUpdateMessage = 'Update the mail server to send replies, forwards, and emoji reactions.';
+  private readonly deliveryUpdateMessage = 'Delivery details require the updated NXPass API on the server.';
   readonly parent = signal<MailConversationReplyDto | null>(null);
   readonly adminActions = this.data.source !== 'inbox';
+  readonly delivery = signal<{ id: string; result: MailReplyDeliveryDto | null; error: string } | null>(null);
   readonly mode = signal<MailConversationAction>(this.adminActions ? this.data.action ?? 'reply' : 'reply');
   readonly forwardQuery = signal('');
   readonly forwardRecipients = signal<string[]>([]);
@@ -245,6 +285,43 @@ export class MailConversationDialogComponent {
       },
       error: () => this.loadError.set('Could not load the conversation.'),
     });
+  }
+
+  toggleDelivery(id: string): void {
+    if (this.delivery()?.id === id) {
+      this.delivery.set(null);
+      return;
+    }
+
+    if (this.thread()?.supportsReplyDelivery !== true) {
+      this.delivery.set({ id, result: null, error: this.deliveryUpdateMessage });
+      return;
+    }
+
+    const request = { id, result: null, error: '' };
+    this.delivery.set(request);
+    this.api.mailReplyDelivery(this.data.source, this.data.id, id)
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe({
+        next: (result) => {
+          if (this.delivery() === request) this.delivery.set({ ...request, result });
+        },
+        error: (error) => {
+          if (this.delivery() === request) {
+            this.delivery.set({ ...request, error: this.deliveryErrorMessage(error) });
+          }
+        },
+      });
+  }
+
+  private deliveryErrorMessage(error: { status: number; error?: { message?: string } }): string {
+    switch (error.status) {
+      case 0: return 'The NXPass API could not be reached.';
+      case 401: return 'Sign in again to view delivery details.';
+      case 403: return 'An administrator account is required to view delivery details.';
+      case 404: return error.error?.message ?? 'The server did not provide the delivery details route.';
+      default: return 'The NXPass API could not load delivery details.';
+    }
   }
 
   recipientLabel(conversation: MailConversationDto): string {

@@ -63,6 +63,7 @@ import {
   MailPlanSendDto,
   MailAttachmentDto,
   MailConversationDto,
+  MailReplyDeliveryDto,
   MailConversationSource,
   MailConversationTarget,
   RecycledMail,
@@ -278,6 +279,12 @@ export class ApiService {
   mailConversation(source: MailConversationSource, id: number, includeBody: boolean, includeReplyContent = true): Observable<MailConversationDto> {
     return this.http.get<MailConversationDto>(this.url(`/api/mail-conversations/${source}/${id}`), {
       params: { includeBody, includeReplyContent },
+      context: new HttpContext().set(SKIP_ERROR_TOAST, true),
+    });
+  }
+
+  mailReplyDelivery(source: MailConversationSource, id: number, replyId: string): Observable<MailReplyDeliveryDto> {
+    return this.http.get<MailReplyDeliveryDto>(this.url(`/api/mail-conversations/${source}/${id}/replies/${replyId}/delivery`), {
       context: new HttpContext().set(SKIP_ERROR_TOAST, true),
     });
   }

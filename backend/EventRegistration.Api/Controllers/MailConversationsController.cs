@@ -32,11 +32,12 @@ public sealed class MailConversationsController(AppDbContext db, EmailService em
         var conversation = await FindConversation(source, id, includeBody);
         if (conversation is null) return NotFound(new { message = "This message has no available conversation." });
         var query = VisibleReplies(conversation).AsNoTracking().OrderBy(r => r.CreatedAt).ThenBy(r => r.Id);
+        var supportsReplyDelivery = IsAdmin && source != "inbox";
         if (!includeReplyContent)
         {
             var metadata = await query.Select(r => new { r.Id, r.AuthorName, r.Status, r.CreatedAt, r.Kind,
                 isPrivate = r.PrivateDeliveryId != null }).ToListAsync();
-            return Ok(new { conversation.Subject, conversation.BodyHtml, replies = metadata, supportsRichActions = true,
+            return Ok(new { conversation.Subject, conversation.BodyHtml, replies = metadata, supportsRichActions = true, supportsReplyDelivery,
                 recipientCount = conversation.DeliveryId is null ? conversation.Recipients.Length : 1 });
         }
         var replies = await query.AsSplitQuery()
@@ -44,8 +45,33 @@ public sealed class MailConversationsController(AppDbContext db, EmailService em
                 r.BodyHtml, attachments = r.Attachments.OrderBy(a => a.UploadedAt)
                     .Select(a => new MailAttachmentDto(a.Id, a.FileName, a.Size)).ToList(),
                 isPrivate = r.PrivateDeliveryId != null }).ToListAsync();
-        return Ok(new { conversation.Subject, conversation.BodyHtml, replies, supportsRichActions = true,
+        return Ok(new { conversation.Subject, conversation.BodyHtml, replies, supportsRichActions = true, supportsReplyDelivery,
             recipientCount = conversation.DeliveryId is null ? conversation.Recipients.Length : 1 });
+    }
+
+    [HttpGet("replies/{replyId:guid}/delivery")]
+    [ResponseCache(NoStore = true, Location = ResponseCacheLocation.None)]
+    public async Task<IActionResult> ReplyDelivery(string source, int id, Guid replyId, CancellationToken cancellationToken)
+    {
+        if (!IsAdmin || source == "inbox") return Forbid();
+        var conversation = await FindConversation(source, id, includeBody: false);
+        if (conversation is null) return NotFound(new { message = "This conversation is no longer available." });
+        var reply = await VisibleReplies(conversation).AsNoTracking().Where(r => r.Id == replyId)
+            .Select(r => new { r.MessageId, r.RecipientsJson, r.DeliveredJson, r.Status, r.LastAttemptAt, r.NextAttemptAt })
+            .SingleOrDefaultAsync(cancellationToken);
+        if (reply is null) return NotFound(new { message = "This reply is no longer available in the conversation." });
+
+        var accepted = (JsonSerializer.Deserialize<string[]>(reply.DeliveredJson ?? "[]") ?? [])
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var recipients = JsonSerializer.Deserialize<string[]>(reply.RecipientsJson) ?? [];
+        return Ok(new
+        {
+            reply.MessageId,
+            reply.Status,
+            reply.LastAttemptAt,
+            nextAttemptAt = reply.Status == MailSendStatus.Queued ? (DateTimeOffset?)reply.NextAttemptAt : null,
+            recipients = recipients.Select(address => new { address, acceptedBySmtp = accepted.Contains(address) }),
+        });
     }
 
     [HttpPost("attachments")]
